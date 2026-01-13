@@ -1,6 +1,12 @@
+<!---
 [![Python package](https://github.com/Redx-Pharma/Redx_regressors_os/actions/workflows/testing.yaml/badge.svg)](https://github.com/Redx-Pharma/Redx_regressors_os/actions/workflows/testing.yaml)
 
 [![Deploy static content to Pages](https://github.com/Redx-Pharma/Redx_regressors_os/actions/workflows/static.yaml/badge.svg)](https://github.com/Redx-Pharma/Redx_regressors_os/actions/workflows/static.yaml)
+-->
+
+[![Python package](https://github.com/Jammyzx1/Redx_regressors_os/actions/workflows/testing.yaml/badge.svg?branch=main)](https://github.com/Jammyzx1/Redx_regressors_os/actions/workflows/testing.yaml)
+
+[![Deploy static content to Pages](https://github.com/Jammyzx1/Redx_regressors_os/actions/workflows/static.yaml/badge.svg)](https://github.com/Jammyzx1/Redx_regressors_os/actions/workflows/static.yaml)
 
 # Redx Regressors
 
