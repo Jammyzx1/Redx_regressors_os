@@ -253,10 +253,10 @@ def test_evaluate_mtr_pytorch_model(sample_data):
     log.critical(f"Evaluation : {test_set_df}")
     # assert True is False
     assert isinstance(test_set_df, pd.DataFrame)
-    assert test_set_df.shape[0] == 5
+    assert test_set_df.shape[0] == 6 # Was 5 added MSE to make it 6
     assert test_set_df.shape[1] == 3
     assert test_set_df.columns.tolist() == ["mean over tasks", "task1", "task2"]
-    assert test_set_df.index.tolist() == ["RMS", "R2", "Pearson R2", "MAE", "MAPE"]
+    assert test_set_df.index.tolist() == ["RMSE", "MSE", "R2", "Pearson R2", "MAE", "MAPE"]
     # These is is a very brittle tests as the values are not fixed. In these 0.95, 12.0 and 1.0 are the expected values and we check that we find it within 0.005
     assert round(test_set_df["task2"]["MAPE"], 2) - 0.95 <= 0.005
     assert round(test_set_df["task1"]["MAE"], 2) - 12.0 <= 0.005

@@ -604,6 +604,11 @@ def train_multitask_regressor(
                 shard_size=shard_size
             )
             log.debug(f"Training dataset shape: {train_dataset.get_data_shape()}")
+            log.critical(f"Training W: {train_dataset.w.shape}")
+            log.critical(f"Training y: {train_dataset.y.shape}")
+            log.critical(f"Training X: {train_dataset.X.shape}")
+            # log.critical(f"Validation W: {valid_dataset.w}")
+            # log.critical(f"Test W: {test_dataset.w}")
             nrows = train_dataset.get_data_shape()[0]
         else:
             train_dataset, valid_dataset, test_dataset, splitter = build_numpy_loader(
@@ -633,7 +638,7 @@ def train_multitask_regressor(
     if fit_transformers is None:
         model = dc.models.MultitaskRegressor(
             len(tasks),
-            nrows,
+            n_features=len(train_dataset.X[0]),
             layer_sizes=layer_sizes,
             batch_size=batch_size,
             learning_rate=learning_rate,
@@ -652,7 +657,7 @@ def train_multitask_regressor(
         ]
         model = dc.models.MultitaskFitTransformRegressor(
             len(tasks),
-            nrows,
+            n_features=len(train_dataset.X[0]),
             layer_sizes=layer_sizes,
             batch_size=batch_size,
             learning_rate=learning_rate,
@@ -667,7 +672,7 @@ def train_multitask_regressor(
         )
 
         # train the model using an explicit loop to allow for intermediate evaluation
-
+    log.critical(model.model)
     model = fit_mtr_pytorch_model(
         model=model,
         train_dataset=train_dataset,
