@@ -13,7 +13,7 @@ import pandas as pd
 from typing import List, Optional, Sequence, Callable, Any
 from numpy.typing import ArrayLike
 from tqdm import tqdm
-from sklearn.metrics import mean_absolute_percentage_error
+from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
 from redxregressors import utilities, evaluate
 from redxregressors.utilities import seed_all
 
@@ -31,6 +31,7 @@ def build_in_memory_loader_using_dataframe(
     frac_train: float = 0.8,
     frac_valid: float = 0.1,
     frac_test: float = 0.1,
+    shard_size: int = 2
 ) -> tuple:
     """
     Function to build the in memory loader for the deepchem multitask regressor model.
@@ -42,6 +43,7 @@ def build_in_memory_loader_using_dataframe(
         targets (np.ndarray): the target values
         weights (np.ndarray): the weights for each task
         splitter (Optional[dc.splits.Splitter]): the splitter to use
+        shard_size (int): the number of molecules per shard. Default is 2.
     Returns:
         tuple: the training, validation and testing datasets and the splitter object if a splitter was provided otherwise the dataset and None, None, None
     """
@@ -65,7 +67,7 @@ def build_in_memory_loader_using_dataframe(
     )
 
     # Create the dataset object
-    dataset = loader.create_dataset(zip(smiles, targets, weights, ids), shard_size=2)
+    dataset = loader.create_dataset(zip(smiles, targets, weights, ids), shard_size=shard_size)
 
     if splitter is not None:
         # Split the dataset into training, validation and testing sets
@@ -94,6 +96,7 @@ def build_in_memory_loader(
     frac_train: float = 0.8,
     frac_valid: float = 0.1,
     frac_test: float = 0.1,
+    shard_size: int = 2
 ) -> tuple:
     """
     Function to build the in memory loader for the deepchem multitask regressor model.
@@ -120,7 +123,7 @@ def build_in_memory_loader(
     )
 
     # Create the dataset object
-    dataset = loader.create_dataset(zip(smiles, targets, weights, ids), shard_size=2)
+    dataset = loader.create_dataset(zip(smiles, targets, weights, ids), shard_size=shard_size)
 
     if splitter is not None:
         # Split the dataset into training, validation and testing sets
@@ -135,6 +138,64 @@ def build_in_memory_loader(
         return train_dataset, valid_dataset, test_dataset, splitter
     else:
         return dataset, None, None, None
+    
+def build_numpy_loader(
+    featurizer: dc.feat.Featurizer,
+    ids: ArrayLike,
+    smiles: ArrayLike,
+    targets: ArrayLike,
+    weights: ArrayLike,
+    splitter: Optional[dc.splits.Splitter] = None,
+    frac_train: float = 0.8,
+    frac_valid: Optional[float] = 0.1,
+    frac_test: float = 0.1,
+) -> tuple:
+    """
+    Function to build the numpy loader for the deepchem multitask regressor model.
+    Args:
+        tasks (List[str]): the names of the tasks to train on
+        featurizer (dc.feat.Featurizer): the featurizer to use
+        ids_column (Optional[str]): the name of the column containing the IDs
+        smiles (List[str]): the SMILES strings
+        targets (np.ndarray): the target values
+        weights (np.ndarray): the weights for each task
+        splitter (Optional[dc.splits.Splitter]): the splitter to use
+    Returns:
+        tuple: the training, validation and testing datasets and the splitter object if a splitter was provided otherwise the dataset and None, None, None
+    """
+
+    torch.use_deterministic_algorithms(True)
+
+    # Create the dataset object
+    dataset = dc.data.NumpyDataset(
+            X=featurizer.featurize(smiles), y=targets, w=weights, ids=ids
+        )
+    log.info(dataset)
+    if splitter is not None:
+        # Split the dataset into training, validation (if ) and testing sets
+        if frac_valid is not None:
+            train_dataset, valid_dataset, test_dataset = splitter.train_valid_test_split(
+                dataset,
+                frac_train=frac_train,
+                frac_valid=frac_valid,
+                frac_test=frac_test,
+                seed=utilities.random_seed,
+                log_every_n=10000,
+            )
+            return train_dataset, valid_dataset, test_dataset, splitter
+        elif isinstance(frac_valid, float):
+            train_dataset, test_dataset = splitter.train_test_split(
+                dataset,
+                frac_train=frac_train,
+                frac_test=frac_test,
+                seed=utilities.random_seed,
+                log_every_n=10000,
+            )
+            return train_dataset, None, test_dataset, splitter
+        else:
+            raise ValueError(f"The argument to frac_valid should be either None or a float but got {type(frac_valid)} with value {frac_valid}. Please update.")
+    else:
+        return dataset, None, None, None
 
 
 def fit_mtr_pytorch_model(
@@ -143,6 +204,7 @@ def fit_mtr_pytorch_model(
     valid_dataset: dc.data.data_loader.DataLoader,
     epochs: int = 100,
     unique_string: Optional[str] = None,
+    callbacks: Optional[Callable] = None
 ) -> dc.models.torch_models.torch_model.TorchModel:
     """
     Function to fit a multitask regressor pytorch model using the deepchem library.
@@ -163,13 +225,15 @@ def fit_mtr_pytorch_model(
     train_scores = []
     valid_scores = []
     plot_epoch_numbers = []
+    if callbacks is None:
+        callbacks = []
     ts = {"mean-mean_squared_error": np.nan}
     vs = {"mean-mean_squared_error": np.nan}
     for i in pbar:
         pbar.set_description(
             f"Processing epoch {i}: latest train MSE (L2-loss) mean over tasks {ts.get('mean-mean_squared_error'):.2f} lastest validation MSE (L2-loss) mean over tasks {vs.get('mean-mean_squared_error'):.2f}"
         )
-        model.fit(train_dataset, nb_epoch=1, deterministic=True)
+        model.fit(train_dataset, nb_epoch=1, deterministic=True, callbacks=callbacks)
         if i % max(int(epochs * 0.1), 1) == 0:
             ts = model.evaluate(
                 train_dataset,
@@ -265,6 +329,7 @@ def evaluate_mtr_pytorch_model(
     test_dataset: dc.data.data_loader.DataLoader,
     tasks: List[str],
     unique_string: Optional[str] = None,
+    remove_examples_based_on_zero_weight: bool = True
 ) -> pd.DataFrame:
     """
     Function to evaluate a multitask regressor pytorch model using the deepchem library.
@@ -274,12 +339,15 @@ def evaluate_mtr_pytorch_model(
         test_dataset (dc.data.data_loader.DataLoader): the test dataset
         tasks (List[str]): the names of the tasks to evaluate
         unique_string (Optional[str]): a unique string to append to the output files
+        remove_examples_based_on_zero_weight (bool): If a datasets has zero weight 
+         for a molecule remove it from the evaluation
     Returns:
         pd.DataFrame: the test set metrics predictions
     """
 
     # evaluate the model
     avg_rms = dc.metrics.Metric(dc.metrics.rms_score, np.mean)
+    avg_mse = dc.metrics.Metric(mean_squared_error, np.mean, mode="regression")
     avg_r2 = dc.metrics.Metric(dc.metrics.r2_score, np.mean)
     avg_perarson_r2 = dc.metrics.Metric(dc.metrics.pearson_r2_score, np.mean)
     avg_mae = dc.metrics.Metric(dc.metrics.mae_score, np.mean)
@@ -297,8 +365,13 @@ def evaluate_mtr_pytorch_model(
     # get the test set predictions
     test_set_prediction = model.predict(test_dataset)
 
+    #test_set_prediction = test_set_prediction * test_dataset.w
+
     # get the test set mean scores over tasks and per task scores
     mean_rmse_over_tasks, rmses = avg_rms.compute_metric(
+        test_dataset.y, test_set_prediction, per_task_metrics=True
+    )
+    mean_mse_over_tasks, mses = avg_mse.compute_metric(
         test_dataset.y, test_set_prediction, per_task_metrics=True
     )
     mean_cod_r2_over_tasks, cod_r2s = avg_r2.compute_metric(
@@ -316,21 +389,31 @@ def evaluate_mtr_pytorch_model(
 
     test_set_metric_table = []
     for metric, means, values in zip(
-        ["RMS", "R2", "Pearson R2", "MAE", "MAPE"],
+        ["RMSE", "MSE", "R2", "Pearson R2", "MAE", "MAPE"],
         [
             mean_rmse_over_tasks,
+            mean_mse_over_tasks,
             mean_cod_r2_over_tasks,
             mean_pearsonr2_over_tasks,
             mean_mae_over_tasks,
             mean_mape_over_tasks,
         ],
-        [rmses, cod_r2s, perarson_r2s, maes, mapes],
+        [rmses, mses, cod_r2s, perarson_r2s, maes, mapes],
     ):
         # log.info(f"{metric} {values}")
-        log.info(
+        log.info(type(values))
+        try:
+            log.info(
             f"Test {metric} mean cross task score: {means:.2f} per task: {' '.join([f'Task {tasks[ith]} {v:.2f}' for ith, v in enumerate(values)])}"
         )
-        test_set_metric_table.append([metric, means] + values)
+            test_set_metric_table.append([metric, means] + values)
+        except TypeError:
+            log.info(
+                        f"Test {metric} mean cross task score: {means:.2f} per task: {' '.join([f'Task {tasks[ith]} {v:.2f}' for ith, v in enumerate([values])])}"
+                    )
+            test_set_metric_table.append([metric, means] + [values])
+        
+        
     test_set_metric_table_df = pd.DataFrame(
         test_set_metric_table,
         columns=["metric", "mean over tasks"] + [ent.lower() for ent in tasks],
@@ -386,6 +469,7 @@ def train_multitask_regressor(
         size=1024, radius=2, chiral=True, bonds=True
     ),
     splitter: Optional[dc.splits.Splitter] = dc.splits.RandomSplitter(),
+    use_numpy_loader: bool = False,
     unique_string: Optional[str] = None,
     fit_transformers: Optional[List[dc.trans.Transformer]] = None,
     pre_seed: bool = True,
@@ -401,6 +485,7 @@ def train_multitask_regressor(
     train_dataset: Optional[dc.data.data_loader.DataLoader] = None,
     test_dataset: Optional[dc.data.data_loader.DataLoader] = None,
     valid_dataset: Optional[dc.data.data_loader.DataLoader] = None,
+    shard_size: int = 8192,
     **kwargs,
 ) -> tuple[Any, Any, Any, Any, pd.DataFrame]:
     """
@@ -453,6 +538,7 @@ def train_multitask_regressor(
         batch_size (int): the batch size for the model
         featurizer (Optional[dc.feat.Featurizer]): the featurizer to use
         splitter (Optional[dc.splits.Splitter]): the splitter to use
+        use_numpy_loader (bool): Use a numpy dataset suitable for modest data sets but will not store task names. Avoids using shards.
         unique_string (Optional[str]): a unique string to append to the output files
         pre_seed (bool): whether to pre seed the random number generators
         frac_train (float): the fraction of the data to use for training
@@ -501,11 +587,27 @@ def train_multitask_regressor(
         else:
             targets = data_df[tasks].values
 
-        # get the data sets for training, validation and testing
-        train_dataset, valid_dataset, test_dataset, splitter = build_in_memory_loader(
-            tasks=tasks,
+        if use_numpy_loader is False:
+            # get the data sets for training, validation and testing
+            train_dataset, valid_dataset, test_dataset, splitter = build_in_memory_loader(
+                tasks=tasks,
+                featurizer=featurizer,
+                ids_column=ids_column,
+                ids=ids,
+                smiles=smiles,
+                targets=targets,
+                weights=weights,
+                splitter=splitter,
+                frac_train=frac_train,
+                frac_valid=frac_valid,
+                frac_test=frac_test,
+                shard_size=shard_size
+            )
+            log.debug(f"Training dataset shape: {train_dataset.get_data_shape()}")
+            nrows = train_dataset.get_data_shape()[0]
+        else:
+            train_dataset, valid_dataset, test_dataset, splitter = build_numpy_loader(
             featurizer=featurizer,
-            ids_column=ids_column,
             ids=ids,
             smiles=smiles,
             targets=targets,
@@ -515,13 +617,14 @@ def train_multitask_regressor(
             frac_valid=frac_valid,
             frac_test=frac_test,
         )
+        nrows = len(train_dataset.y)
 
     # if the data sets are provided then use them
     else:
         log.debug("Using the provided data sets")
         splitter = None
 
-    log.debug(f"Training dataset shape: {train_dataset.get_data_shape()}")
+    
     log.debug(train_dataset)
     log.debug(train_dataset.X)
     log.debug(train_dataset.y)
@@ -530,7 +633,7 @@ def train_multitask_regressor(
     if fit_transformers is None:
         model = dc.models.MultitaskRegressor(
             len(tasks),
-            train_dataset.get_data_shape()[0],
+            nrows,
             layer_sizes=layer_sizes,
             batch_size=batch_size,
             learning_rate=learning_rate,
@@ -547,10 +650,9 @@ def train_multitask_regressor(
             ent(train_dataset, transform_X=True, transform_y=False)
             for ent in fit_transformers
         ]
-        log.debug(train_dataset.get_data_shape()[0])
         model = dc.models.MultitaskFitTransformRegressor(
             len(tasks),
-            train_dataset.get_data_shape()[0],
+            nrows,
             layer_sizes=layer_sizes,
             batch_size=batch_size,
             learning_rate=learning_rate,
@@ -596,6 +698,7 @@ def train_progressive_multitask_regressor(
         size=1024, radius=2, chiral=True, bonds=True
     ),
     splitter: Optional[dc.splits.Splitter] = dc.splits.RandomSplitter(),
+    use_numpy_loader: bool = False,
     unique_string: Optional[str] = None,
     pre_seed: bool = True,
     frac_train: float = 0.8,
@@ -608,6 +711,7 @@ def train_progressive_multitask_regressor(
     dropouts: float | Sequence[float] = 0.5,
     activation_fns: Callable | str | Sequence[Callable | str] = "relu",
     train_per_task: bool = False,
+    shard_size: int = 8192,
     **kwargs,
 ) -> tuple[Any, Any, Any, Any, pd.DataFrame]:
     """
@@ -660,6 +764,7 @@ def train_progressive_multitask_regressor(
         batch_size (int): the batch size for the model
         featurizer (Optional[dc.feat.Featurizer]): the featurizer to use
         splitter (Optional[dc.splits.Splitter]): the splitter to use
+        use_numpy_loader (bool): Use a numpy dataset suitable for modest data sets but will not store task names. Avoids using shards.
         unique_string (Optional[str]): a unique string to append to the output files
         pre_seed (bool): whether to pre seed the random number generators
         frac_train (float): the fraction of the data to use for training
@@ -694,9 +799,10 @@ def train_progressive_multitask_regressor(
     if task_weights is None:
         weights = np.ones((len(smiles), len(tasks)), dtype=np.float16)
     else:
-        weights = np.ones((len(smiles), len(tasks)), dtype=np.float16)
-        for indx, tw in enumerate(task_weights):
-            weights[:, indx] *= task_weights[indx]
+        # weights = np.ones((len(smiles), len(tasks)), dtype=np.float16)
+        # for indx, tw in enumerate(task_weights):
+        #     weights[:, indx] *= task_weights[indx]
+        weights = task_weights
 
     if len(tasks) == 1:
         log.warning(
@@ -706,29 +812,46 @@ def train_progressive_multitask_regressor(
         targets = data_df[tasks].values
 
     # get the data sets for training, validation and testing
-    train_dataset, valid_dataset, test_dataset, splitter = build_in_memory_loader(
-        tasks=tasks,
-        featurizer=featurizer,
-        ids_column=ids_column,
-        ids=ids,
-        smiles=smiles,
-        targets=targets,
-        weights=weights,
-        splitter=splitter,
-        frac_train=frac_train,
-        frac_valid=frac_valid,
-        frac_test=frac_test,
-    )
-
-    log.debug(f"Training dataset shape: {train_dataset.get_data_shape()}")
+    if use_numpy_loader is False:
+        train_dataset, valid_dataset, test_dataset, splitter = build_in_memory_loader(
+            tasks=tasks,
+            featurizer=featurizer,
+            ids_column=ids_column,
+            ids=ids,
+            smiles=smiles,
+            targets=targets,
+            weights=weights,
+            splitter=splitter,
+            frac_train=frac_train,
+            frac_valid=frac_valid,
+            frac_test=frac_test,
+            shard_size=shard_size,
+        )
+        log.debug(f"Training dataset shape: {train_dataset.get_data_shape()}")
+        nfeatures = train_dataset.get_data_shape()[0]
+    else:
+        train_dataset, valid_dataset, test_dataset, splitter = build_numpy_loader(
+            featurizer=featurizer,
+            ids=ids,
+            smiles=smiles,
+            targets=targets,
+            weights=weights,
+            splitter=splitter,
+            frac_train=frac_train,
+            frac_valid=frac_valid,
+            frac_test=frac_test,
+        )
+        nfeatures = train_dataset.get_shape()[0][1]
+    log.info(nfeatures)
+    
     log.debug(train_dataset)
     log.debug(train_dataset.X)
     log.debug(train_dataset.y)
 
     # instantiate the model
     model = dc.models.torch_models.ProgressiveMultitaskModel(
-        len(tasks),
-        train_dataset.get_data_shape()[0],
+        n_tasks=len(tasks),
+        n_features=nfeatures,
         mode="regression",
         layer_sizes=layer_sizes,
         batch_size=batch_size,

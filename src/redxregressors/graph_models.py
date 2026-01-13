@@ -15,7 +15,7 @@ from torch_geometric.nn import GCNConv
 from torch_geometric.nn import aggr
 from typing import List, Optional, Callable, Union, Tuple, Any
 from tqdm import tqdm
-from redxregressors import datasets, ml_featurization
+from redxregressors import datasets, ml_featurization, evaluate
 import os
 from pathlib import Path
 from torch.nn import Linear
@@ -25,6 +25,165 @@ log = logging.getLogger(__name__)
 
 torch.use_deterministic_algorithms(True)
 
+
+def fit_modular_gnn_model(
+    model: dc.models.torch_models.torch_model.TorchModel,
+    train_dataset: dc.data.data_loader.DataLoader,
+    valid_dataset: dc.data.data_loader.DataLoader,
+    epochs: int = 100,
+    unique_string: Optional[str] = None,
+    callbacks: Optional[Callable] = None,
+    evaluate_fraction: float = 0.1,
+    model_name: str = "modular_gnn",
+    output_path: Path | str = Path().cwd(),
+    validation_score_stop: Optional[float] = None,
+    validation_score_stop_sense: str = "min",
+    **kwargs
+) -> dc.models.torch_models.torch_model.TorchModel:
+    """
+    Function to fit a multitask regressor pytorch model using the deepchem library.
+    Args:
+        model (dc.models.torch_models.torch_model.TorchModel): the model to train
+        train_dataset (dc.data.data_loader.DataLoader): the training dataset
+        valid_dataset (dc.data.data_loader.DataLoader): the validation dataset
+        epochs (int): the number of epochs to train for
+        unique_string (Optional[str]): a unique string to append to the output files
+    Returns:
+        dc.models.torch_models.torch_model.TorchModel: the trained model
+    """
+
+    torch.use_deterministic_algorithms(True)
+
+    if isinstance(output_path, str):
+        output_path = Path(output_path)
+
+    # train the model using an explicit loop to allow for intermediate evaluation
+    pbar = tqdm(range(epochs))
+    train_scores = []
+    valid_scores = []
+    plot_epoch_numbers = []
+    if callbacks is None:
+        callbacks = []
+    ts = {"mean-mean_absolute_error": np.nan}
+    vs = {"mean-mean_absolute_error": np.nan}
+    for i in pbar:
+        pbar.set_description(
+            f"Processing epoch {i}: latest train MAE mean over tasks {ts.get('mean-mean_absolute_error'):.2f} lastest validation MAE mean over tasks {vs.get('mean-mean_absolute_error'):.2f}"
+        )
+        model.fit(train_dataset, nb_epoch=1, deterministic=True, callbacks=callbacks, **kwargs)
+        if i % max(int(epochs * evaluate_fraction), 1) == 0:
+            ts = model.evaluate(
+                train_dataset,
+                [dc.metrics.Metric(dc.metrics.mean_absolute_error, np.mean)],
+            )
+            train_scores.append([v for _, v in ts.items()][0])
+            vs = model.evaluate(
+                valid_dataset,
+                [dc.metrics.Metric(dc.metrics.mean_absolute_error, np.mean)],
+            )
+            valid_scores.append([v for _, v in vs.items()][0])
+            plot_epoch_numbers.append(i)
+            log.debug(f"Train scores epoch {i}: {train_scores}")
+            log.debug(f"Validation scores epoch {i}: {valid_scores}")
+            evaluate.plot_metric_curves(
+                metrics=[train_scores, valid_scores],
+                metric_labels=["Training MAE", "Validation MAE"],
+                x=plot_epoch_numbers,
+                filename=output_path.joinpath(f"{model_name}_training_curves.png")
+                if unique_string is None
+                else output_path.joinpath(f"{model_name}_training_curves_{unique_string}.png"),
+            )
+
+            if validation_score_stop is not None:
+                if validation_score_stop_sense == "min":
+                    if valid_scores[-1] <= validation_score_stop:
+                        log.info(f"Validation score {valid_scores[-1]} is <= {validation_score_stop}. Stopping early.")
+                        break
+                elif validation_score_stop_sense == "max":
+                    if valid_scores[-1] >= validation_score_stop:
+                        log.info(f"Validation score {valid_scores[-1]} is >= {validation_score_stop}. Stopping early.")
+                        break
+
+    return model
+
+def fit_modular_gnn_model_mse(
+    model: dc.models.torch_models.torch_model.TorchModel,
+    train_dataset: dc.data.data_loader.DataLoader,
+    valid_dataset: dc.data.data_loader.DataLoader,
+    epochs: int = 100,
+    unique_string: Optional[str] = None,
+    callbacks: Optional[Callable] = None,
+    evaluate_fraction: float = 0.1,
+    model_name: str = "modular_gnn",
+    output_path: Path | str = Path().cwd(),
+    validation_score_stop: Optional[float] = None,
+    validation_score_stop_sense: str = "min"
+) -> dc.models.torch_models.torch_model.TorchModel:
+    """
+    Function to fit a multitask regressor pytorch model using the deepchem library.
+    Args:
+        model (dc.models.torch_models.torch_model.TorchModel): the model to train
+        train_dataset (dc.data.data_loader.DataLoader): the training dataset
+        valid_dataset (dc.data.data_loader.DataLoader): the validation dataset
+        epochs (int): the number of epochs to train for
+        unique_string (Optional[str]): a unique string to append to the output files
+    Returns:
+        dc.models.torch_models.torch_model.TorchModel: the trained model
+    """
+
+    torch.use_deterministic_algorithms(True)
+
+    if isinstance(output_path, str):
+        output_path = Path(output_path)
+
+    # train the model using an explicit loop to allow for intermediate evaluation
+    pbar = tqdm(range(epochs))
+    train_scores = []
+    valid_scores = []
+    plot_epoch_numbers = []
+    if callbacks is None:
+        callbacks = []
+    ts = {"mean-mean_squared_error": np.nan}
+    vs = {"mean-mean_squared_error": np.nan}
+    for i in pbar:
+        pbar.set_description(
+            f"Processing epoch {i}: latest train MSE (L2-loss) mean over tasks {ts.get('mean-mean_squared_error'):.2f} lastest validation MSE (L2-loss) mean over tasks {vs.get('mean-mean_squared_error'):.2f}"
+        )
+        model.fit(train_dataset, nb_epoch=1, deterministic=True, callbacks=callbacks)
+        if i % max(int(epochs * evaluate_fraction), 1) == 0:
+            ts = model.evaluate(
+                train_dataset,
+                [dc.metrics.Metric(dc.metrics.mean_squared_error, np.mean)],
+            )
+            train_scores.append([v for _, v in ts.items()][0])
+            vs = model.evaluate(
+                valid_dataset,
+                [dc.metrics.Metric(dc.metrics.mean_squared_error, np.mean)],
+            )
+            valid_scores.append([v for _, v in vs.items()][0])
+            plot_epoch_numbers.append(i)
+            log.debug(f"Train scores epoch {i}: {train_scores}")
+            log.debug(f"Validation scores epoch {i}: {valid_scores}")
+            evaluate.plot_metric_curves(
+                metrics=[train_scores, valid_scores],
+                metric_labels=["Training MSE", "Validation MSE"],
+                x=plot_epoch_numbers,
+                filename=output_path.joinpath(f"{model_name}_training_curves.png")
+                if unique_string is None
+                else output_path.joinpath(f"{model_name}_training_curves_{unique_string}.png"),
+            )
+
+            if validation_score_stop is not None:
+                if validation_score_stop_sense == "min":
+                    if valid_scores[-1] <= validation_score_stop:
+                        log.info(f"Validation score {valid_scores[-1]} is <= {validation_score_stop}. Stopping early.")
+                        break
+                elif validation_score_stop_sense == "max":
+                    if valid_scores[-1] >= validation_score_stop:
+                        log.info(f"Validation score {valid_scores[-1]} is >= {validation_score_stop}. Stopping early.")
+                        break
+
+    return model
 
 def train_attentivefp_pyg(
     model, train_loader, optimizer, epochs: int = 100
