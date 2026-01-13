@@ -17,11 +17,16 @@ jobs:
         python-version: ["3.11"]
 
     steps:
+      - name: Delete unnecessary tools folder
+        run: rm -rf /opt/hostedtoolcache
+
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
+        
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
