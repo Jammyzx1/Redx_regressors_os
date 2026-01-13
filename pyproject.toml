@@ -38,7 +38,7 @@ dependencies = [
     "dm-haiku>=0.0.12",
     "xgboost>=2.1.1",
     "lightgbm>=4.5.0",
-    "deepchem>=2.8.0.dev20250924183502",
+    "deepchem==2.8.0.dev20250924183502",
     "mlflow>=2.16.2",
     "plotly>=5.24.1",
     "seaborn>=0.13.2",
